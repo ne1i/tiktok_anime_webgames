@@ -19,6 +19,18 @@ npm start        # ou : node server.js
 
 Le serveur affiche les URLs (locale + réseau). Le port se règle avec `PORT=8080 npm start`.
 
+## Nix
+
+Avec Nix (flakes) :
+
+```bash
+nix develop            # shell de dev (Node.js + npm)
+nix build .            # construit le package (binaire `imposteur-anime`)
+nix run .              # lance le serveur
+```
+
+Au premier `nix build`, remplace `npmDepsHash` dans `flake.nix` par le hash affiché dans l'erreur, puis génère `flake.lock` avec `nix flake lock`.
+
 ## Reconstruire le dataset
 
 Les personnages, leurs traits et leur force (`power`) sont dans `data/characters.json` (généré via l'API AniList). Pour régénérer :

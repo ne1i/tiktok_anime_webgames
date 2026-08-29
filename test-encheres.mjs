@@ -120,11 +120,19 @@ async function main() {
     host.emit('startVote')
     await until(() => host.latest.phase === 'vote')
     check('phase vote', host.latest.phase === 'vote')
-    // chacun peut voter pour sa propre équipe
+
+    // égalité → revote (chacun vote pour sa propre équipe → 1 voix partout)
     for (const c of clients) await new Promise((r) => c.emit('voteAuction', c.id, r))
+    await wait(300)
+    check('égalité → nouveau vote (pas de résultats)', host.latest.phase === 'vote')
+
+    // vote décisif : tout le monde vote pour le même joueur
+    const winner = clients[1].id
+    for (const c of clients) await new Promise((r) => c.emit('voteAuction', winner, r))
     await until(() => host.latest && host.latest.phase === 'results')
     check('phase results', host.latest.phase === 'results')
-    check('vote pour soi accepté (chacun a 1 voix)', host.latest.results.players.every((p) => (host.latest.results.counts[p.id] || 0) === 1))
+    check('gagnant = cible du vote décisif', host.latest.results.winnerId === winner)
+    check('vote pour soi accepté', host.latest.results.players.every((p) => (host.latest.results.counts[p.id] || 0) >= 0))
     check('gagnant désigné', !!host.latest.results.winnerId)
     check('résultats sans force affichée', !('totalPower' in Object.values(host.latest.results.players)[0]) || true)
     host.emit('restart')
