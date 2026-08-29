@@ -7,10 +7,16 @@
   "scripts": {
     "start": "node start.js",
     "start:local": "node server.js",
-    "build-data": "node scripts/build-data.js"
+    "build-data": "node scripts/build-data.js",
+    "test": "node test-game.mjs && node test-extended.mjs && node test-replay.mjs && node test-hostmode.mjs && node test-encheres.mjs && node test-fixes.mjs",
+    "test:e2e": "node test-browser.mjs && node test-browser-encheres.mjs"
   },
   "dependencies": {
     "express": "^4.19.2",
     "socket.io": "^4.7.5"
+  },
+  "devDependencies": {
+    "socket.io-client": "^4.8.3",
+    "puppeteer-core": "^25.9.0"
   }
 }

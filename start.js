@@ -11,9 +11,20 @@ const CADDY_BIN = process.env.CADDY || path.join(__dirname, 'bin', 'caddy')
 // charge .env (clés Porkbun) dans process.env
 const envFile = path.join(__dirname, '.env')
 if (fs.existsSync(envFile)) {
-  for (const line of fs.readFileSync(envFile, 'utf8').split('\n')) {
-    const m = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\s*$/)
-    if (m) process.env[m[1]] = m[2]
+  for (const rawLine of fs.readFileSync(envFile, 'utf8').split('\n')) {
+    const line = rawLine.trim()
+    if (!line || line.startsWith('#')) continue
+    const eq = line.indexOf('=')
+    if (eq === -1) continue
+    const key = line.slice(0, eq).trim()
+    let value = line.slice(eq + 1).trim()
+    // retire les commentaires de fin de ligne et les guillemets englobants
+    const hashIdx = value.indexOf(' #')
+    if (hashIdx !== -1) value = value.slice(0, hashIdx).trim()
+    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+      value = value.slice(1, -1)
+    }
+    if (key) process.env[key] = value
   }
 }
 

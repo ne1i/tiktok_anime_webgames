@@ -11,11 +11,31 @@ const PORT = process.env.PORT || 3000
 
 const app = express()
 const server = http.createServer(app)
-const io = new Server(server, { cors: { origin: '*' } })
+const io = new Server(server)
 
 app.use(express.static(path.join(__dirname, 'public')))
 
 const rooms = new Map()
+const MAX_ROOMS = 100
+const MAX_PLAYERS_PER_ROOM = 20
+const MAX_NAME_LENGTH = 20
+
+function cleanName(name) {
+  const n = (typeof name === 'string' ? name : '').trim().replace(/\s+/g, ' ').slice(0, MAX_NAME_LENGTH)
+  return n || 'Joueur'
+}
+
+function cleanAnimes(list) {
+  if (!Array.isArray(list)) return null
+  return [...new Set(list.filter((a) => typeof a === 'string' && ALL_ANIMES.includes(a)))]
+}
+
+function clampInt(value, min, max, fallback) {
+  if (value === null || value === undefined || value === '') return fallback
+  const n = Math.round(Number(value))
+  if (!Number.isFinite(n)) return fallback
+  return Math.min(max, Math.max(min, n))
+}
 
 function genCode() {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
@@ -76,11 +96,9 @@ function roomView(room, forPlayerId) {
     if (room.phase === 'results') view.results = room.results
   }
   if (room.phase === 'playing' || room.phase === 'voting') {
-    const isHost = forPlayerId === room.host
-    const hostMode = room.settings.mode === 'host'
     const playable = playablePlayers(room)
     const meInRoom = room.players.find((p) => p.id === forPlayerId)
-    if (hostMode && isHost) {
+    if (meInRoom?.isArbitre) {
       view.myRole = 'arbitre'
       view.spectator = { citoyen: room.game?.reference || null, imposteur: room.game?.imposteur || null }
     } else if (meInRoom) {
@@ -112,7 +130,17 @@ function broadcast(room) {
 }
 
 function playablePlayers(room) {
-  return room.settings.mode === 'host' ? room.players.filter((p) => !p.isHost) : room.players
+  return room.players.filter((p) => !p.isArbitre)
+}
+
+// en mode hôte, l'hôte devient arbitre : il ne joue pas
+function applyArbitreFlags(room) {
+  const hostMode = room.settings.mode === 'host'
+  for (const p of room.players) p.isArbitre = hostMode && p.id === room.host
+}
+
+function clearArbitreFlags(room) {
+  for (const p of room.players) p.isArbitre = false
 }
 
 /* ---------- MODE ENCHÈRES ---------- */
@@ -136,6 +164,7 @@ function allDone(room) {
 
 function startAuctionGame(room) {
   const pool = auctionPoolFor(room)
+  clearArbitreFlags(room)
   for (let i = pool.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1))
     ;[pool[i], pool[j]] = [pool[j], pool[i]]
@@ -150,6 +179,7 @@ function startAuctionGame(room) {
   }
   room.phase = 'encheres'
   room.votes = new Map()
+  room.tieBreaks = 0
   room.results = null
   nextAuction(room)
   return true
@@ -256,6 +286,7 @@ function startVotePhase(room) {
   if (room.phase !== 'debat') return
   room.phase = 'vote'
   room.votes = new Map()
+  room.tieBreaks = 0
   broadcast(room)
 }
 
@@ -268,14 +299,22 @@ function computeAuctionResults(room) {
     if (n > max) { max = n; top = [id] }
     else if (n === max && n > 0) top.push(id)
   }
-  // égalité => nouveau vote
+  let winnerId
   if (top.length > 1) {
-    room.phase = 'vote'
-    room.votes = new Map()
-    broadcast(room)
-    return
+    if ((room.tieBreaks || 0) >= 1) {
+      // 2e égalité consécutive : départage aléatoire pour ne pas boucler
+      winnerId = top[Math.floor(Math.random() * top.length)]
+    } else {
+      // égalité => nouveau vote
+      room.tieBreaks = 1
+      room.phase = 'vote'
+      room.votes = new Map()
+      broadcast(room)
+      return
+    }
+  } else {
+    winnerId = top[0] || null
   }
-  const winnerId = top[0] || null
   room.phase = 'results'
   room.results = {
     winnerId,
@@ -305,6 +344,7 @@ function startGame(room) {
   if (room.settings.game === 'encheres') {
     return startAuctionGame(room)
   }
+  applyArbitreFlags(room)
   const hostMode = room.settings.mode === 'host'
   const playable = playablePlayers(room)
   if (playable.length < 3) return false
@@ -334,7 +374,7 @@ function startGame(room) {
 
   for (const p of room.players) {
     p.hints = []
-    if (hostMode && p.isHost) {
+    if (p.isArbitre) {
       p.isImposteur = false
       p.character = null
       continue
@@ -382,7 +422,6 @@ function submitHint(room, player, hint) {
 function computeResults(room) {
   const playable = playablePlayers(room)
   const imposteurs = playable.filter((p) => p.isImposteur)
-  const citizens = playable.filter((p) => !p.isImposteur)
 
   // votes : décompte des votes reçus
   const voteCounts = new Map(playable.map((p) => [p.id, 0]))
@@ -398,30 +437,18 @@ function computeResults(room) {
   const eliminated = top.length === 1 ? top[0] : null // égalité => personne éliminé
   const eliminatedPlayer = eliminated ? playable.find((p) => p.id === eliminated) : null
 
-  let citizensWin = false
-  if (eliminatedPlayer) {
-    if (eliminatedPlayer.isImposteur) {
-      citizensWin = true
-    }
-  }
-  // si tous les imposteurs sont éliminés => citoyens gagnent
-  const eliminatedSet = eliminatedPlayer ? [eliminatedPlayer.id] : []
-  const allImposteursEliminated = imposteurs.every((i) => eliminatedSet.includes(i.id))
-
-  const citizenEliminated = eliminatedPlayer && !eliminatedPlayer.isImposteur
-
-  let winner = null
-  let detail = ''
-  if (citizenEliminated || (eliminatedPlayer && !allImposteursEliminated)) {
-    winner = 'imposteurs'
-    detail = 'Un citoyen a été éliminé'
-  } else if (eliminatedPlayer && allImposteursEliminated) {
-    winner = 'citoyens'
-    detail = 'L’imposteur a été démasqué'
-  } else if (!eliminatedPlayer) {
-    // personne éliminé : victoire imposteurs (ils survivent)
+  let winner
+  let detail
+  if (!eliminatedPlayer) {
+    // égalité : personne n'est éliminé, les imposteurs survivent
     winner = 'imposteurs'
     detail = 'Égalité, personne n’a été éliminé'
+  } else if (eliminatedPlayer.isImposteur) {
+    winner = 'citoyens'
+    detail = imposteurs.length > 1 ? 'Un imposteur a été démasqué' : 'L’imposteur a été démasqué'
+  } else {
+    winner = 'imposteurs'
+    detail = 'Un citoyen a été éliminé'
   }
 
   room.phase = 'results'
@@ -445,8 +472,14 @@ function computeResults(room) {
 }
 
 function endGame(room) {
+  if (playablePlayers(room).length === 0) {
+    // plus personne pour voter (ex : mode hôte, arbitre seul) => retour lobby
+    restartRoom(room)
+    return
+  }
   room.phase = 'voting'
   room.votes = new Map()
+  room.tieBreaks = 0
   broadcast(room)
 }
 
@@ -454,11 +487,13 @@ function restartRoom(room) {
   for (const p of room.players) {
     p.character = null
     p.isImposteur = false
+    p.isArbitre = false
     p.hints = []
   }
   room.phase = 'lobby'
   room.game = null
   room.votes = new Map()
+  room.tieBreaks = 0
   room.results = null
   broadcast(room)
 }
@@ -467,31 +502,36 @@ io.on('connection', (socket) => {
   let room = null
 
   socket.on('createRoom', ({ name, settings }, cb) => {
+    if (room) return cb?.({ ok: false, error: 'Tu es déjà dans une salle' })
+    if (rooms.size >= MAX_ROOMS) return cb?.({ ok: false, error: 'Trop de salles actives, réessaie plus tard' })
     const code = genCode()
+    const mode = settings?.mode === 'host' ? 'host' : 'auto'
+    const selectedAnimes = cleanAnimes(settings?.selectedAnimes)
     room = {
       code,
       host: socket.id,
       settings: {
-        rounds: settings.rounds || 3,
-        sameAnime: !!settings.sameAnime,
-        imposteurs: settings.imposteurs || 0,
-        mode: settings.mode === 'host' ? 'host' : 'auto',
-        game: settings.game === 'encheres' ? 'encheres' : 'imposteur',
-        auctionAnime: AUCTION_ANIMES.includes(settings.auctionAnime) ? settings.auctionAnime : 'One Piece',
-        money: Math.min(100, Math.max(5, settings.money || 20)),
-        target: Math.min(8, Math.max(1, settings.target || 4)),
-        skips: Math.min(5, Math.max(0, settings.skips ?? 1)),
-        selectedAnimes: settings.selectedAnimes?.length ? settings.selectedAnimes : ALL_ANIMES,
+        rounds: clampInt(settings?.rounds, 1, 9, 3),
+        sameAnime: !!settings?.sameAnime,
+        imposteurs: clampInt(settings?.imposteurs, 0, 3, 0),
+        mode,
+        game: settings?.game === 'encheres' ? 'encheres' : 'imposteur',
+        auctionAnime: AUCTION_ANIMES.includes(settings?.auctionAnime) ? settings.auctionAnime : 'One Piece',
+        money: clampInt(settings?.money, 5, 100, 20),
+        target: clampInt(settings?.target, 1, 8, 4),
+        skips: clampInt(settings?.skips, 0, 5, 1),
+        selectedAnimes: selectedAnimes && selectedAnimes.length ? selectedAnimes : ALL_ANIMES,
       },
       hostPicks: null,
       phase: 'lobby',
       players: [],
       game: null,
       votes: new Map(),
+      tieBreaks: 0,
       results: null,
     }
     rooms.set(code, room)
-    const player = { id: socket.id, socketId: socket.id, name, isHost: true, character: null, isImposteur: false, hints: [] }
+    const player = { id: socket.id, socketId: socket.id, name: cleanName(name), isHost: true, isArbitre: mode === 'host', character: null, isImposteur: false, hints: [] }
     room.players.push(player)
     socket.join(code)
     updateSettings(room)
@@ -499,10 +539,12 @@ io.on('connection', (socket) => {
   })
 
   socket.on('joinRoom', ({ code, name }, cb) => {
-    const r = rooms.get((code || '').toUpperCase())
+    if (room) return cb?.({ ok: false, error: 'Tu es déjà dans une salle' })
+    const r = rooms.get((typeof code === 'string' ? code : '').trim().slice(0, 8).toUpperCase())
     if (!r) return cb?.({ ok: false, error: 'Salle introuvable' })
     if (r.phase !== 'lobby') return cb?.({ ok: false, error: 'La partie a déjà commencé' })
-    const player = { id: socket.id, socketId: socket.id, name, isHost: false, character: null, isImposteur: false, hints: [] }
+    if (r.players.length >= MAX_PLAYERS_PER_ROOM) return cb?.({ ok: false, error: 'La salle est pleine' })
+    const player = { id: socket.id, socketId: socket.id, name: cleanName(name), isHost: false, isArbitre: false, character: null, isImposteur: false, hints: [] }
     r.players.push(player)
     room = r
     socket.join(r.code)
@@ -513,23 +555,31 @@ io.on('connection', (socket) => {
   socket.on('settings', (settings) => {
     if (!room || room.phase !== 'lobby') return
     if (socket.id !== room.host) return
-    room.settings.rounds = settings.rounds || room.settings.rounds
+    if (typeof settings !== 'object' || settings === null) return
+    const rounds = Math.round(Number(settings.rounds))
+    if (Number.isFinite(rounds)) room.settings.rounds = Math.min(9, Math.max(1, rounds))
     room.settings.sameAnime = !!settings.sameAnime
-    room.settings.imposteurs = settings.imposteurs
+    const imposteurs = Math.round(Number(settings.imposteurs))
+    if (Number.isFinite(imposteurs)) room.settings.imposteurs = Math.max(0, Math.min(3, imposteurs))
     if (settings.mode === 'host' || settings.mode === 'auto') room.settings.mode = settings.mode
     if (settings.game === 'encheres' || settings.game === 'imposteur') room.settings.game = settings.game
     if (AUCTION_ANIMES.includes(settings.auctionAnime)) room.settings.auctionAnime = settings.auctionAnime
     if (typeof settings.money === 'number') room.settings.money = Math.min(100, Math.max(5, settings.money))
     if (typeof settings.target === 'number') room.settings.target = Math.min(8, Math.max(1, settings.target))
     if (typeof settings.skips === 'number') room.settings.skips = Math.min(5, Math.max(0, settings.skips))
-    if (Array.isArray(settings.selectedAnimes)) room.settings.selectedAnimes = settings.selectedAnimes
+    const animes = cleanAnimes(settings.selectedAnimes)
+    if (animes) room.settings.selectedAnimes = animes.length ? animes : ALL_ANIMES
+    applyArbitreFlags(room)
     updateSettings(room)
   })
 
   socket.on('hostPicks', ({ citoyenId, imposteurId }, cb) => {
     if (!room || room.phase !== 'lobby' || socket.id !== room.host) return cb?.({ ok: false })
-    if (citoyenId && imposteurId && citoyenId === imposteurId) return cb?.({ ok: false, error: 'Les 2 personnages doivent être différents' })
-    room.hostPicks = { citoyen: citoyenId, imposteur: imposteurId }
+    const isId = (v) => typeof v === 'string' || typeof v === 'number'
+    const cId = isId(citoyenId) ? citoyenId : null
+    const iId = isId(imposteurId) ? imposteurId : null
+    if (cId && iId && cId === iId) return cb?.({ ok: false, error: 'Les 2 personnages doivent être différents' })
+    room.hostPicks = { citoyen: cId, imposteur: iId }
     broadcast(room)
     cb?.({ ok: true })
   })
@@ -576,6 +626,7 @@ io.on('connection', (socket) => {
 
   socket.on('toggleAnime', ({ anime, checked }, cb) => {
     if (!room || room.phase !== 'lobby' || socket.id !== room.host) return cb?.({ ok: false })
+    if (typeof anime !== 'string' || !ALL_ANIMES.includes(anime)) return cb?.({ ok: false, error: 'Anime invalide' })
     let sel = new Set(room.settings.selectedAnimes)
     if (checked) sel.add(anime)
     else sel.delete(anime)
@@ -587,10 +638,12 @@ io.on('connection', (socket) => {
   socket.on('start', (cb) => {
     if (!room || socket.id !== room.host) return
     if (room.settings.game === 'encheres') {
+      clearArbitreFlags(room)
       if (room.players.length < 2) return cb?.({ ok: false, error: 'Il faut au moins 2 joueurs' })
       const ok = startGame(room)
       return cb?.({ ok, error: ok ? null : 'Impossible de démarrer' })
     }
+    applyArbitreFlags(room)
     const playable = playablePlayers(room)
     if (playable.length < 3) return cb?.({ ok: false, error: 'Il faut au moins 3 joueurs' })
     const ok = startGame(room)
@@ -621,7 +674,8 @@ io.on('connection', (socket) => {
     const me = room.players.find((p) => p.id === socket.id)
     if (!me) return
     if (currentTurnPlayer(room)?.id !== socket.id) return cb?.({ ok: false, error: 'Pas ton tour' })
-    const clean = (hint || '').trim()
+    if (typeof hint !== 'string') return cb?.({ ok: false, error: 'Indice invalide' })
+    const clean = hint.trim()
     if (!clean) return cb?.({ ok: false, error: 'Indice vide' })
     if (clean.length > 60) return cb?.({ ok: false, error: 'Indice trop long' })
     submitHint(room, me, clean)
@@ -650,6 +704,21 @@ io.on('connection', (socket) => {
       rooms.delete(room.code)
       return
     }
+    // imposteur : on retire le joueur de l'ordre des tours pour ne pas bloquer la partie
+    if ((room.phase === 'playing' || room.phase === 'voting') && room.game) {
+      const g = room.game
+      const idx = g.turnOrder.indexOf(socket.id)
+      if (idx !== -1) {
+        g.turnOrder = g.turnOrder.filter((id) => id !== socket.id)
+        if (idx < g.turnIndex) g.turnIndex--
+        if (g.turnIndex >= g.turnOrder.length) {
+          // le joueur parti était dernier du tour : on passe au round suivant
+          g.turnIndex = 0
+          g.round++
+          if (g.round > room.settings.rounds && room.phase === 'playing') room.phase = 'voting'
+        }
+      }
+    }
     // en mode enchères : le joueur part, on recale l'enchère en cours
     if (room.phase === 'encheres' && room.game?.current) {
       const c = room.game.current
@@ -667,10 +736,19 @@ io.on('connection', (socket) => {
     if (room.phase === 'encheres' && room.game && allDone(room)) {
       endAuctions(room)
     }
-    // si l'host part, on transfère
+    // si l'host part, on transfère (l'arbitre éventuel garde son rôle via isArbitre)
     if (room.host === socket.id) {
       room.host = room.players[0].id
       room.players[0].isHost = true
+    }
+    // vote : si tous les joueurs restants ont voté, on calcule les résultats
+    if (room.phase === 'voting' && room.votes.size >= playablePlayers(room).length) {
+      computeResults(room)
+      return
+    }
+    if (room.phase === 'vote' && room.settings.game === 'encheres' && room.votes.size >= room.players.length) {
+      computeAuctionResults(room)
+      return
     }
     broadcast(room)
   })

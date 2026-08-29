@@ -73,7 +73,7 @@ function renderHome() {
   ]))
 
   const nameInput = el('input', {
-    type: 'text', placeholder: 'Ton pseudo', value: myName,
+    type: 'text', placeholder: 'Ton pseudo', value: myName, maxlength: 20,
     oninput: (e) => { myName = e.target.value; localStorage.setItem('imposteur_name', myName) },
   })
   app.appendChild(card([el('label', { text: 'Ton pseudo' }), nameInput]))

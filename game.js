@@ -95,25 +95,6 @@ export function pickPair(pool, sameAnime) {
   return Math.random() < 0.5 ? best : [best[1], best[0]]
 }
 
-export function pickReference(pool) {
-  return pool[Math.floor(Math.random() * pool.length)]
-}
-
-export function pickImposteur(referenceChar, { sameAnime, pool }) {
-  let candidates
-  if (sameAnime) {
-    candidates = pool.filter((c) => c.anime === referenceChar.anime && c.id !== referenceChar.id)
-  } else {
-    candidates = pool.filter((c) => c.anime !== referenceChar.anime && c.id !== referenceChar.id)
-    if (candidates.length === 0) candidates = pool.filter((c) => c.id !== referenceChar.id)
-  }
-  if (candidates.length === 0) return null
-  candidates.sort((a, b) => similarity(b, referenceChar) - similarity(a, referenceChar))
-  const bestScore = similarity(candidates[0], referenceChar)
-  const tied = candidates.filter((c) => similarity(c, referenceChar) === bestScore)
-  return tied[Math.floor(Math.random() * tied.length)]
-}
-
 export function buildPool(selectedAnimes) {
   if (selectedAnimes == null) return CHARACTERS.filter((c) => !c.auctionOnly)
   return CHARACTERS.filter((c) => !c.auctionOnly && selectedAnimes.includes(c.anime))

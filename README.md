@@ -43,11 +43,30 @@ node scripts/expand-roster.mjs   # ajoute les persos manquants + power
 ## Tests
 
 ```bash
+npm install        # installe aussi les deps de test (socket.io-client, puppeteer-core)
+npm run test       # suites backend (nécessite un serveur lancé, voir ci-dessous)
+npm run test:e2e   # E2E navigateur (nécessite google-chrome-stable)
+```
+
+Les suites backend se connectent à `http://localhost:3000` (ou `TEST_URL=http://localhost:3100`). Lancer d'abord :
+
+```bash
+PORT=3100 node server.js &
+TEST_URL=http://localhost:3100 npm run test
+```
+
+```bash
 node test-game.mjs              # flux imposteur complet
 node test-extended.mjs          # modes et cas limites imposteur
 node test-replay.mjs            # rejouer + nombre de tours
 node test-hostmode.mjs          # mode hôte arbitre
 node test-encheres.mjs          # mode enchères (tour par tour)
+node test-fixes.mjs             # régressions sécurité/robustesse
 node test-browser.mjs           # E2E navigateur imposteur
 node test-browser-encheres.mjs  # E2E navigateur enchères
 ```
+
+## Sécurité
+
+- Les clés API (Porkbun) vivent uniquement dans `.env`, jamais commité (`.gitignore` + filtre de source Nix qui l'exclut du store).
+- Si une clé a été exposée un jour (capture d'écran, partage…), la révoquer/régénérer depuis le dashboard Porkbun.

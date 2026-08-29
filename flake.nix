@@ -15,12 +15,29 @@
       packages = forAllSystems (pkgs:
         let
           node = nodejs pkgs;
+          # Filtre de source : ne JAMAIS copier dans le store Nix (lisible par tous)
+          # les secrets (.env), ni node_modules/, bin/ (caddy 48 Mo), .git, etc.
+          src = pkgs.lib.cleanSourceWith {
+            src = ./.;
+            filter = path: type:
+              let
+                rel = pkgs.lib.removePrefix (toString ./. + "/") (toString path);
+              in !(
+                rel == ".env"
+                || pkgs.lib.hasPrefix ".env." rel
+                || rel == "bin" || pkgs.lib.hasPrefix "bin/" rel
+                || rel == "node_modules" || pkgs.lib.hasPrefix "node_modules/" rel
+                || rel == ".git" || pkgs.lib.hasPrefix ".git/" rel
+                || rel == "result" || pkgs.lib.hasPrefix "result/" rel
+                || pkgs.lib.hasPrefix "test-" rel
+              );
+          };
         in
         {
           default = pkgs.buildNpmPackage {
             pname = "imposteur-anime";
             version = "1.0.0";
-            src = ./.;
+            inherit src;
             nodejs = node;
             # Premier build : mettre un hash bidon, lancer `nix build .`, puis remplacer
             # par le hash affiché dans l'erreur. (`nix flake lock` génère flake.lock.)

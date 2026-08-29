@@ -1,3 +1,8 @@
 node_modules/
 bin/
 .env
+.env.*
+*.log
+result
+result-*
+.DS_Store
