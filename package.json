@@ -1,0 +1,16 @@
+{
+  "name": "imposteur-anime",
+  "version": "1.0.0",
+  "description": "L'imposteur, version personnages d'anime",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node start.js",
+    "start:local": "node server.js",
+    "build-data": "node scripts/build-data.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "socket.io": "^4.7.5"
+  }
+}

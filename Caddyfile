@@ -1,0 +1,9 @@
+home.aubetoile.dev:3000 {
+	tls {
+		dns porkbun {
+			api_key {$PORKBUN_API_KEY}
+			api_secret_key {$PORKBUN_API_SECRET}
+		}
+	}
+	reverse_proxy 127.0.0.1:3001
+}
